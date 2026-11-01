@@ -8,6 +8,7 @@ import android.os.Bundle
 import android.view.KeyEvent
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -52,7 +53,6 @@ import java.net.URLEncoder
 
 data class RadioStation(val name: String, val genre: String, val streamUrl: String, val isLossless: Boolean = false)
 
-// Globális lejátszó a háttérhez és Android Autóhoz
 object PlayerHolder {
     var exoPlayer: ExoPlayer? = null
 }
@@ -98,7 +98,6 @@ class MainActivity : ComponentActivity() {
         exoPlayer = ExoPlayer.Builder(this, renderersFactory).setAudioAttributes(attr, true).setHandleAudioBecomingNoisy(true).build()
         PlayerHolder.exoPlayer = exoPlayer
 
-        // Android Auto / Háttérszolgáltatás indítása
         try {
             val serviceIntent = Intent(this, AutoMediaService::class.java)
             startForegroundService(serviceIntent)
@@ -361,12 +360,19 @@ fun RadioTab(context: Context, onPlay: (RadioStation) -> Unit) {
 fun YouTubeMusicTab() {
     AndroidView(factory = { ctx ->
         WebView(ctx).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = false
-            settings.setSupportZoom(true)
-            settings.builtInZoomControls = true
-            settings.displayZoomControls = false
+            settings.apply {
+                javaScriptEnabled = true
+                domStorageEnabled = true
+                mediaPlaybackRequiresUserGesture = false
+                // ASZTALI MÓD (Desktop User-Agent), hogy a YouTube asztali felülete töltődjön be a könnyen tekerhető csúszkával
+                userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+                useWideViewPort = true
+                loadWithOverviewMode = true
+                setSupportZoom(true)
+                builtInZoomControls = true
+                displayZoomControls = false
+                mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
+            }
             webChromeClient = object : WebChromeClient() {
                 override fun onPermissionRequest(r: PermissionRequest) { r.grant(r.resources) }
             }
