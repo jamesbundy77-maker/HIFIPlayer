@@ -6,6 +6,9 @@ import android.media.audiofx.BassBoost
 import android.media.audiofx.Equalizer
 import android.os.Bundle
 import android.view.KeyEvent
+import android.webkit.PermissionRequest
+import android.webkit.WebChromeClient
+import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -184,14 +187,13 @@ fun HiFiAppUI(
                     }
                 )
                 1 -> YouTubeMusicTab()
-                2 -> SpotifyControllerTab(context)
+                2 -> SpotifyEmbeddedTab(context)
                 3 -> EqualizerTab(eq, bass)
             }
         }
     }
 }
 
-// VILÁGRÁDIÓ ADATBÁZIS LEKÉRDEZŐ (Radio-Browser API)
 suspend fun queryWorldRadios(endpoint: String): List<RadioStation> = withContext(Dispatchers.IO) {
     val list = mutableListOf<RadioStation>()
     val servers = listOf("de1.api.radio-browser.info", "at1.api.radio-browser.info", "nl1.api.radio-browser.info")
@@ -284,12 +286,11 @@ fun RadioTab(context: Context, onPlay: (RadioStation) -> Unit) {
         Text("Világrádió Kereső (40.000+ adó)", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Spacer(modifier = Modifier.height(10.dp))
 
-        // KERESŐSÁV
         Row(verticalAlignment = Alignment.CenterVertically) {
             OutlinedTextField(
                 value = searchQuery,
                 onValueChange = { searchQuery = it },
-                placeholder = { Text("Rádió neve, város, stílus (pl. Rock, Danubius)...", fontSize = 13.sp) },
+                placeholder = { Text("Rádió neve, város, stílus...", fontSize = 13.sp) },
                 singleLine = true,
                 modifier = Modifier.weight(1f)
             )
@@ -313,7 +314,6 @@ fun RadioTab(context: Context, onPlay: (RadioStation) -> Unit) {
 
         Spacer(modifier = Modifier.height(10.dp))
 
-        // GYORSKATEGÓRIA GOMBOK
         Row(
             modifier = Modifier.horizontalScroll(rememberScrollState()),
             horizontalArrangement = Arrangement.spacedBy(8.dp)
@@ -378,7 +378,6 @@ fun RadioTab(context: Context, onPlay: (RadioStation) -> Unit) {
                                     Text("FLAC", color = Color.Black, fontWeight = FontWeight.Bold, fontSize = 10.sp, modifier = Modifier.padding(4.dp))
                                 }
                             }
-                            // CSILLAG GOMB (Kedvencekhez adás / törlés)
                             Text(
                                 text = if (isFav) "⭐" else "☆",
                                 fontSize = 22.sp,
@@ -420,102 +419,37 @@ fun YouTubeMusicTab() {
 }
 
 @Composable
-fun SpotifyControllerTab(context: Context) {
-    Column(
-        modifier = Modifier.padding(16.dp).fillMaxSize(),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text("Spotify Direkt Vezérlő", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Text(
-            "A Spotify hangja automatikusan átfut a Hi-Fi EQ fülön beállított hangszínszabályzón és Bass Booston!",
-            color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(vertical = 8.dp)
-        )
-        Spacer(modifier = Modifier.height(20.dp))
+fun SpotifyEmbeddedTab(context: Context) {
+    var useBuiltInWeb by remember { mutableStateOf(true) }
 
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(onClick = { sendSpotifyMediaKey(context, KeyEvent.KEYCODE_MEDIA_PREVIOUS) }) {
-                Text("⏮ Előző")
-            }
-            Button(onClick = { sendSpotifyMediaKey(context, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }) {
-                Text("⏯ Play/Pause")
-            }
-            Button(onClick = { sendSpotifyMediaKey(context, KeyEvent.KEYCODE_MEDIA_NEXT) }) {
-                Text("⏭ Következő")
-            }
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-        OutlinedButton(onClick = {
-            val intent = context.packageManager.getLaunchIntentForPackage("com.spotify.music")
-            if (intent != null) context.startActivity(intent)
-        }) {
-            Text("Spotify megnyitása playlist választáshoz")
-        }
-    }
-}
-
-fun sendSpotifyMediaKey(context: Context, keyCode: Int) {
-    val downIntent = Intent(Intent.ACTION_MEDIA_BUTTON).apply {
-        setPackage("com.spotify.music")
-        putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, keyCode))
-    }
-    context.sendBroadcast(downIntent)
-
-    val upIntent = Intent(Intent.ACTION_MEDIA_BUTTON).apply {
-        setPackage("com.spotify.music")
-        putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_UP, keyCode))
-    }
-    context.sendBroadcast(upIntent)
-}
-
-@Composable
-fun EqualizerTab(eq: Equalizer?, bass: BassBoost?) {
-    Column(modifier = Modifier.padding(16.dp)) {
-        Text("Hi-Fi Master Equalizer", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Text("Aktív a Rádióra, YT Musicra és a Spotify-ra is", color = Color(0xFF00E676), fontSize = 13.sp)
-        Spacer(modifier = Modifier.height(20.dp))
-
-        if (eq == null) {
-            Text("Equalizer inicializálása... Indíts el egy adót!", color = Color.Gray)
-            return@Column
-        }
-
-        val bands = eq.numberOfBands
-        val minEq = eq.bandLevelRange[0]
-        val maxEq = eq.bandLevelRange[1]
-
-        for (i in 0 until bands) {
-            val bandIndex = i.toShort()
-            val freqHz = eq.getCenterFreq(bandIndex) / 1000
-            var sliderVal by remember { mutableFloatStateOf(eq.getBandLevel(bandIndex).toFloat()) }
-
-            Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("${freqHz} Hz", color = Color.White, fontWeight = FontWeight.Medium)
-                    Text("${(sliderVal / 100).toInt()} dB", color = Color(0xFF00E676))
+    Column(modifier = Modifier.fillMaxSize()) {
+        // Felső vezérlősáv: Belső lejátszó + Gyorsgombok
+        Surface(color = Color(0xFF141414), modifier = Modifier.fillMaxWidth()) {
+            Row(
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 6.dp).fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedButton(
+                        onClick = { useBuiltInWeb = true },
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (useBuiltInWeb) Color(0xFF00E676).copy(alpha = 0.2f) else Color.Transparent
+                        )
+                    ) {
+                        Text("🌐 Belső Spotify", fontSize = 12.sp, color = Color.White)
+                    }
+                    OutlinedButton(
+                        onClick = { useBuiltInWeb = false },
+                        colors = ButtonDefaults.outlinedButtonColors(
+                            containerColor = if (!useBuiltInWeb) Color(0xFF00E676).copy(alpha = 0.2f) else Color.Transparent
+                        )
+                    ) {
+                        Text("📱 Távirányító", fontSize = 12.sp, color = Color.White)
+                    }
                 }
-                Slider(
-                    value = sliderVal,
-                    onValueChange = {
-                        sliderVal = it
-                        eq.setBandLevel(bandIndex, it.toInt().toShort())
-                    },
-                    valueRange = minEq.toFloat()..maxEq.toFloat()
-                )
             }
         }
 
-        Spacer(modifier = Modifier.height(12.dp))
-        var bassStrength by remember { mutableFloatStateOf((bass?.roundedStrength ?: 0).toFloat()) }
-        Text("Sub-Bass Boost (Mélykiemelés)", color = Color.White, fontWeight = FontWeight.Bold)
-        Slider(
-            value = bassStrength,
-            onValueChange = {
-                bassStrength = it
-                bass?.setStrength(it.toInt().toShort())
-            },
-            valueRange = 0f..1000f
-        )
-    }
-}
+        if (useBuiltInWeb) {
+            // BEÉ
