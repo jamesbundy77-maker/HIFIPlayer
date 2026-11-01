@@ -1,5 +1,7 @@
 package com.sajat.hifiplayer
 
+import android.app.NotificationChannel
+import android.app.NotificationManager
 import android.content.Context
 import android.content.Intent
 import android.os.Bundle
@@ -31,11 +33,14 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.media3.common.AudioAttributes
 import androidx.media3.common.C
 import androidx.media3.common.MediaItem
+import androidx.media3.common.Player
 import androidx.media3.common.util.UnstableApi
 import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
+import androidx.media3.session.MediaSession
+import androidx.media3.session.MediaSessionService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -47,19 +52,57 @@ import java.net.URLEncoder
 
 data class RadioStation(val name: String, val genre: String, val streamUrl: String, val isLossless: Boolean = false)
 
+// Globális lejátszó a háttérhez és Android Autóhoz
+object PlayerHolder {
+    var exoPlayer: ExoPlayer? = null
+}
+
+class AutoMediaService : MediaSessionService() {
+    private var mediaSession: MediaSession? = null
+
+    @OptIn(UnstableApi::class)
+    override fun onCreate() {
+        super.onCreate()
+        val player = PlayerHolder.exoPlayer
+        if (player != null) {
+            mediaSession = MediaSession.Builder(this, player).build()
+        }
+    }
+
+    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
+
+    override fun onDestroy() {
+        mediaSession?.run {
+            player.release()
+            release()
+            mediaSession = null
+        }
+        super.onDestroy()
+    }
+}
+
 class MainActivity : ComponentActivity() {
     private lateinit var exoPlayer: ExoPlayer
 
     @OptIn(UnstableApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
         val renderersFactory = object : DefaultRenderersFactory(this) {
             override fun buildAudioSink(c: Context, f: Boolean, p: Boolean): AudioSink {
                 return DefaultAudioSink.Builder(c).setEnableFloatOutput(true).build()
             }
         }
         val attr = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
+        
         exoPlayer = ExoPlayer.Builder(this, renderersFactory).setAudioAttributes(attr, true).setHandleAudioBecomingNoisy(true).build()
+        PlayerHolder.exoPlayer = exoPlayer
+
+        // Android Auto / Háttérszolgáltatás indítása
+        try {
+            val serviceIntent = Intent(this, AutoMediaService::class.java)
+            startForegroundService(serviceIntent)
+        } catch (_: Exception) {}
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Color(0xFF0A0A0A), surface = Color(0xFF161616), primary = Color(0xFF00E676))) {
@@ -79,6 +122,7 @@ fun loadSavedFavorites(context: Context): List<RadioStation> {
     val raw = prefs.getString("fav_json", null)
     if (raw.isNullOrEmpty()) {
         return listOf(
+            RadioStation("BDPST Rock", "HU • Rock", "http://stream.bdpstrock.hu:8000/live"),
             RadioStation("Radio Paradise (FLAC)", "US • FLAC", "https://stream.radioparadise.com/flac", true),
             RadioStation("Retro Rádió", "HU • MP3", "https://icast.connectmedia.hu/5001/live.mp3"),
             RadioStation("Rádió 1", "HU • MP3", "https://icast.connectmedia.hu/5201/live.mp3"),
@@ -114,8 +158,22 @@ fun saveFavorites(context: Context, list: List<RadioStation>) {
 fun HiFiAppUI(player: ExoPlayer, context: Context) {
     var selectedTab by remember { mutableIntStateOf(0) }
     var currentTitle by remember { mutableStateOf("Válassz egy adót!") }
+    var currentMetadata by remember { mutableStateOf("") }
     var isPlaying by remember { mutableStateOf(false) }
     val tabs = listOf("📻 Rádió", "▶️ YT Music", "🟢 Spotify")
+
+    DisposableEffect(player) {
+        val listener = object : Player.Listener {
+            override fun onMediaMetadataChanged(mediaMetadata: androidx.media3.common.MediaMetadata) {
+                super.onMediaMetadataChanged(mediaMetadata)
+                val title = mediaMetadata.title?.toString() ?: ""
+                val artist = mediaMetadata.artist?.toString() ?: ""
+                currentMetadata = if (artist.isNotEmpty() && title.isNotEmpty()) "$artist - $title" else title.ifEmpty { artist }
+            }
+        }
+        player.addListener(listener)
+        onDispose { player.removeListener(listener) }
+    }
 
     Scaffold(
         bottomBar = {
@@ -123,8 +181,10 @@ fun HiFiAppUI(player: ExoPlayer, context: Context) {
                 Surface(color = Color(0xFF1E1E1E), modifier = Modifier.fillMaxWidth()) {
                     Row(modifier = Modifier.padding(10.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("HI-RES STREAM PLAYER", color = Color(0xFF00E676), fontSize = 10.sp)
-                            Text(currentTitle, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, fontSize = 13.sp)
+                            Text(currentTitle, color = Color(0xFF00E676), fontWeight = FontWeight.Bold, fontSize = 13.sp, maxLines = 1)
+                            if (currentMetadata.isNotEmpty()) {
+                                Text("🎵 $currentMetadata", color = Color.White, fontSize = 11.sp, maxLines = 1)
+                            }
                         }
                         Button(onClick = {
                             if (player.isPlaying) { player.pause(); isPlaying = false } else { player.play(); isPlaying = true }
@@ -148,6 +208,7 @@ fun HiFiAppUI(player: ExoPlayer, context: Context) {
                     player.prepare()
                     player.play()
                     currentTitle = station.name
+                    currentMetadata = ""
                     isPlaying = true
                 }
                 1 -> YouTubeMusicTab()
@@ -233,9 +294,9 @@ fun RadioTab(context: Context, onPlay: (RadioStation) -> Unit) {
                 Column(modifier = Modifier.padding(10.dp)) {
                     Text("Saját rádió webcím (URL) hozzáadása", color = Color(0xFF00E676), fontSize = 13.sp, fontWeight = FontWeight.Bold)
                     Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(value = customName, onValueChange = { customName = it }, placeholder = { Text("Rádió neve (pl. Kedvenc Rádióm)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(value = customName, onValueChange = { customName = it }, placeholder = { Text("Rádió neve (pl. BDPST Rock)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     Spacer(modifier = Modifier.height(4.dp))
-                    OutlinedTextField(value = customUrl, onValueChange = { customUrl = it }, placeholder = { Text("Stream URL (pl. https://...)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    OutlinedTextField(value = customUrl, onValueChange = { customUrl = it }, placeholder = { Text("Stream URL (pl. http://...)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
                     Spacer(modifier = Modifier.height(6.dp))
                     Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
                         TextButton(onClick = { showAddDialog = false }) { Text("Mégse", color = Color.Gray) }
@@ -303,6 +364,9 @@ fun YouTubeMusicTab() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
+            settings.setSupportZoom(true)
+            settings.builtInZoomControls = true
+            settings.displayZoomControls = false
             webChromeClient = object : WebChromeClient() {
                 override fun onPermissionRequest(r: PermissionRequest) { r.grant(r.resources) }
             }
