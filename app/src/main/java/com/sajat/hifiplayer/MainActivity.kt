@@ -2,13 +2,10 @@ package com.sajat.hifiplayer
 
 import android.content.Context
 import android.content.Intent
-import android.media.audiofx.BassBoost
-import android.media.audiofx.Equalizer
 import android.os.Bundle
 import android.view.KeyEvent
 import android.webkit.PermissionRequest
 import android.webkit.WebChromeClient
-import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.activity.ComponentActivity
@@ -52,8 +49,6 @@ data class RadioStation(val name: String, val genre: String, val streamUrl: Stri
 
 class MainActivity : ComponentActivity() {
     private lateinit var exoPlayer: ExoPlayer
-    private var equalizer: Equalizer? = null
-    private var bassBoost: BassBoost? = null
 
     @OptIn(UnstableApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -66,32 +61,61 @@ class MainActivity : ComponentActivity() {
         val attr = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         exoPlayer = ExoPlayer.Builder(this, renderersFactory).setAudioAttributes(attr, true).setHandleAudioBecomingNoisy(true).build()
 
-        try {
-            equalizer = Equalizer(1000, 0).apply { enabled = true }
-            bassBoost = BassBoost(1000, 0).apply { enabled = true }
-        } catch (_: Exception) {}
-
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Color(0xFF0A0A0A), surface = Color(0xFF161616), primary = Color(0xFF00E676))) {
-                HiFiAppUI(exoPlayer, equalizer, bassBoost, this)
+                HiFiAppUI(exoPlayer, this)
             }
         }
     }
 
     override fun onDestroy() {
         super.onDestroy()
-        equalizer?.release()
-        bassBoost?.release()
         exoPlayer.release()
     }
 }
 
+fun loadSavedFavorites(context: Context): List<RadioStation> {
+    val prefs = context.getSharedPreferences("hifi_favs", Context.MODE_PRIVATE)
+    val raw = prefs.getString("fav_json", null)
+    if (raw.isNullOrEmpty()) {
+        return listOf(
+            RadioStation("Radio Paradise (FLAC)", "US • FLAC", "https://stream.radioparadise.com/flac", true),
+            RadioStation("Retro Rádió", "HU • MP3", "https://icast.connectmedia.hu/5001/live.mp3"),
+            RadioStation("Rádió 1", "HU • MP3", "https://icast.connectmedia.hu/5201/live.mp3"),
+            RadioStation("Petőfi Rádió", "HU • AAC", "https://icast.connectmedia.hu/4738/mr2.mp3")
+        )
+    }
+    val list = mutableListOf<RadioStation>()
+    try {
+        val arr = JSONArray(raw)
+        for (i in 0 until arr.length()) {
+            val o = arr.getJSONObject(i)
+            list.add(RadioStation(o.getString("n"), o.getString("g"), o.getString("u"), o.optBoolean("l", false)))
+        }
+    } catch (_: Exception) {}
+    return list
+}
+
+fun saveFavorites(context: Context, list: List<RadioStation>) {
+    val arr = JSONArray()
+    list.forEach {
+        val o = JSONObject().apply {
+            put("n", it.name)
+            put("g", it.genre)
+            put("u", it.streamUrl)
+            put("l", it.isLossless)
+        }
+        arr.put(o)
+    }
+    context.getSharedPreferences("hifi_favs", Context.MODE_PRIVATE).edit().putString("fav_json", arr.toString()).apply()
+}
+
 @Composable
-fun HiFiAppUI(player: ExoPlayer, eq: Equalizer?, bass: BassBoost?, context: Context) {
+fun HiFiAppUI(player: ExoPlayer, context: Context) {
     var selectedTab by remember { mutableIntStateOf(0) }
     var currentTitle by remember { mutableStateOf("Válassz egy adót!") }
     var isPlaying by remember { mutableStateOf(false) }
-    val tabs = listOf("📻 Rádió", "▶️ YT", "🟢 Spotify", "🎚️ EQ")
+    val tabs = listOf("📻 Rádió", "▶️ YT Music", "🟢 Spotify")
 
     Scaffold(
         bottomBar = {
@@ -99,7 +123,7 @@ fun HiFiAppUI(player: ExoPlayer, eq: Equalizer?, bass: BassBoost?, context: Cont
                 Surface(color = Color(0xFF1E1E1E), modifier = Modifier.fillMaxWidth()) {
                     Row(modifier = Modifier.padding(10.dp).fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
                         Column(modifier = Modifier.weight(1f)) {
-                            Text("32-BIT HI-RES ENGINE", color = Color(0xFF00E676), fontSize = 10.sp)
+                            Text("HI-RES STREAM PLAYER", color = Color(0xFF00E676), fontSize = 10.sp)
                             Text(currentTitle, color = Color.White, fontWeight = FontWeight.Bold, maxLines = 1, fontSize = 13.sp)
                         }
                         Button(onClick = {
@@ -127,8 +151,7 @@ fun HiFiAppUI(player: ExoPlayer, eq: Equalizer?, bass: BassBoost?, context: Cont
                     isPlaying = true
                 }
                 1 -> YouTubeMusicTab()
-                2 -> SpotifyEmbeddedTab()
-                3 -> EqualizerTab(eq, bass)
+                2 -> SpotifyControllerTab(context)
             }
         }
     }
@@ -158,23 +181,25 @@ suspend fun queryRadios(endpoint: String): List<RadioStation> = withContext(Disp
 fun RadioTab(context: Context, onPlay: (RadioStation) -> Unit) {
     val scope = rememberCoroutineScope()
     var query by remember { mutableStateOf("") }
-    var stations by remember { mutableStateOf(listOf(
-        RadioStation("Radio Paradise (FLAC)", "US • FLAC", "https://stream.radioparadise.com/flac", true),
-        RadioStation("Retro Rádió", "HU • MP3", "https://icast.connectmedia.hu/5001/live.mp3"),
-        RadioStation("Rádió 1", "HU • MP3", "https://icast.connectmedia.hu/5201/live.mp3"),
-        RadioStation("Petőfi Rádió", "HU • AAC", "https://icast.connectmedia.hu/4738/mr2.mp3")
-    )) }
+    var customName by remember { mutableStateOf("") }
+    var customUrl by remember { mutableStateOf("") }
+    var favorites by remember { mutableStateOf(loadSavedFavorites(context)) }
+    var stations by remember { mutableStateOf(favorites) }
     var loading by remember { mutableStateOf(false) }
+    var modeTitle by remember { mutableStateOf("⭐ Kedvencek") }
+    var showAddDialog by remember { mutableStateOf(false) }
 
     Column(modifier = Modifier.padding(16.dp).fillMaxSize()) {
-        Text("Világrádió Kereső", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text("Rádiólejátszó & Kedvencek", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
         Spacer(modifier = Modifier.height(8.dp))
+
         Row {
-            OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("Keresés (pl. Rock, Danubius)...") }, modifier = Modifier.weight(1f), singleLine = true)
+            OutlinedTextField(value = query, onValueChange = { query = it }, placeholder = { Text("Keresés a világban...") }, modifier = Modifier.weight(1f), singleLine = true)
             Spacer(modifier = Modifier.width(8.dp))
             Button(onClick = {
                 if (query.isNotBlank()) {
                     loading = true
+                    modeTitle = "🔍 Találatok: $query"
                     scope.launch {
                         stations = queryRadios("search?name=${URLEncoder.encode(query, "UTF-8")}&limit=50&hidebroken=true")
                         loading = false
@@ -182,23 +207,66 @@ fun RadioTab(context: Context, onPlay: (RadioStation) -> Unit) {
                 }
             }) { Text("Keres") }
         }
-        Spacer(modifier = Modifier.height(10.dp))
-        Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+
+        Spacer(modifier = Modifier.height(8.dp))
+
+        Row(modifier = Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Button(onClick = { modeTitle = "⭐ Kedvencek"; stations = favorites }) { Text("⭐ Kedvencek") }
             Button(onClick = {
                 loading = true
+                modeTitle = "🇭🇺 Magyar adók"
                 scope.launch { stations = queryRadios("search?countrycode=HU&limit=50&hidebroken=true"); loading = false }
-            }) { Text("🇭🇺 Magyar adók") }
+            }) { Text("🇭🇺 Magyar") }
             Button(onClick = {
                 loading = true
+                modeTitle = "💎 FLAC"
                 scope.launch { stations = queryRadios("search?codec=FLAC&limit=30&hidebroken=true"); loading = false }
             }) { Text("💎 FLAC") }
+            Button(onClick = { showAddDialog = true }, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF00E676))) {
+                Text("➕ Saját Link", color = Color.Black)
+            }
         }
-        Spacer(modifier = Modifier.height(10.dp))
+
+        if (showAddDialog) {
+            Spacer(modifier = Modifier.height(8.dp))
+            Surface(color = Color(0xFF1E1E1E), shape = RoundedCornerShape(8.dp), modifier = Modifier.fillMaxWidth()) {
+                Column(modifier = Modifier.padding(10.dp)) {
+                    Text("Saját rádió webcím (URL) hozzáadása", color = Color(0xFF00E676), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedTextField(value = customName, onValueChange = { customName = it }, placeholder = { Text("Rádió neve (pl. Kedvenc Rádióm)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    Spacer(modifier = Modifier.height(4.dp))
+                    OutlinedTextField(value = customUrl, onValueChange = { customUrl = it }, placeholder = { Text("Stream URL (pl. https://...)") }, modifier = Modifier.fillMaxWidth(), singleLine = true)
+                    Spacer(modifier = Modifier.height(6.dp))
+                    Row(horizontalArrangement = Arrangement.End, modifier = Modifier.fillMaxWidth()) {
+                        TextButton(onClick = { showAddDialog = false }) { Text("Mégse", color = Color.Gray) }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Button(onClick = {
+                            if (customName.isNotBlank() && customUrl.isNotBlank()) {
+                                val newStation = RadioStation(customName.trim(), "Egyéni Stream", customUrl.trim(), customUrl.contains("flac", true))
+                                favorites = favorites + newStation
+                                saveFavorites(context, favorites)
+                                stations = favorites
+                                modeTitle = "⭐ Kedvencek"
+                                customName = ""
+                                customUrl = ""
+                                showAddDialog = false
+                            }
+                        }) { Text("Mentés a Kedvencekbe") }
+                    }
+                }
+            }
+        }
+
+        Spacer(modifier = Modifier.height(8.dp))
+        Text(modeTitle, color = Color(0xFF00E676), fontSize = 13.sp, fontWeight = FontWeight.Bold)
+        Spacer(modifier = Modifier.height(6.dp))
+
         if (loading) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) { CircularProgressIndicator(color = Color(0xFF00E676)) }
         } else {
             LazyColumn(modifier = Modifier.fillMaxSize()) {
                 items(stations) { s ->
+                    val isFav = favorites.any { it.streamUrl == s.streamUrl }
                     Card(modifier = Modifier.fillMaxWidth().padding(vertical = 4.dp).clickable { onPlay(s) }, colors = CardDefaults.cardColors(containerColor = Color(0xFF1A1A1A))) {
                         Row(modifier = Modifier.padding(12.dp), verticalAlignment = Alignment.CenterVertically) {
                             Column(modifier = Modifier.weight(1f)) {
@@ -206,10 +274,20 @@ fun RadioTab(context: Context, onPlay: (RadioStation) -> Unit) {
                                 Text(s.genre, color = Color.Gray, fontSize = 12.sp)
                             }
                             if (s.isLossless) {
-                                Surface(color = Color(0xFF00E676), shape = RoundedCornerShape(4.dp)) {
+                                Surface(color = Color(0xFF00E676), shape = RoundedCornerShape(4.dp), modifier = Modifier.padding(end = 8.dp)) {
                                     Text("FLAC", color = Color.Black, fontSize = 10.sp, fontWeight = FontWeight.Bold, modifier = Modifier.padding(3.dp))
                                 }
                             }
+                            Text(
+                                text = if (isFav) "⭐" else "☆",
+                                fontSize = 22.sp,
+                                color = if (isFav) Color(0xFFFFD700) else Color.Gray,
+                                modifier = Modifier.clickable {
+                                    favorites = if (isFav) favorites.filterNot { it.streamUrl == s.streamUrl } else favorites + s
+                                    saveFavorites(context, favorites)
+                                    if (modeTitle == "⭐ Kedvencek") stations = favorites
+                                }
+                            )
                         }
                     }
                 }
@@ -225,6 +303,9 @@ fun YouTubeMusicTab() {
             settings.javaScriptEnabled = true
             settings.domStorageEnabled = true
             settings.mediaPlaybackRequiresUserGesture = false
+            webChromeClient = object : WebChromeClient() {
+                override fun onPermissionRequest(r: PermissionRequest) { r.grant(r.resources) }
+            }
             webViewClient = WebViewClient()
             loadUrl("https://music.youtube.com")
         }
@@ -232,44 +313,33 @@ fun YouTubeMusicTab() {
 }
 
 @Composable
-fun SpotifyEmbeddedTab() {
-    AndroidView(factory = { ctx ->
-        WebView(ctx).apply {
-            settings.javaScriptEnabled = true
-            settings.domStorageEnabled = true
-            settings.mediaPlaybackRequiresUserGesture = false
-            settings.userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-            webChromeClient = object : WebChromeClient() {
-                override fun onPermissionRequest(r: PermissionRequest) { r.grant(r.resources) }
-            }
-            webViewClient = WebViewClient()
-            loadUrl("https://open.spotify.com")
-        }
-    }, modifier = Modifier.fillMaxSize())
-}
+fun SpotifyControllerTab(context: Context) {
+    Column(modifier = Modifier.padding(16.dp).fillMaxSize(), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+        Text("Spotify Lejátszó Vezérlő", color = Color.White, fontSize = 20.sp, fontWeight = FontWeight.Bold)
+        Text("Jelentkezz be a hivatalos Spotify appban, majd innen kényelmesen vezérelheted.", color = Color.Gray, fontSize = 13.sp, modifier = Modifier.padding(vertical = 8.dp))
+        Spacer(modifier = Modifier.height(20.dp))
 
-@Composable
-fun EqualizerTab(eq: Equalizer?, bass: BassBoost?) {
-    Column(modifier = Modifier.padding(16.dp)) {
-        Text("Hi-Fi Master Equalizer", color = Color.White, fontSize = 22.sp, fontWeight = FontWeight.Bold)
-        Spacer(modifier = Modifier.height(16.dp))
-        if (eq == null) {
-            Text("Indíts el egy rádiót az EQ aktiválásához!", color = Color.Gray)
-            return@Column
+        Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+            Button(onClick = { sendKey(context, KeyEvent.KEYCODE_MEDIA_PREVIOUS) }) { Text("⏮ Előző") }
+            Button(onClick = { sendKey(context, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }) { Text("⏯ Play/Pause") }
+            Button(onClick = { sendKey(context, KeyEvent.KEYCODE_MEDIA_NEXT) }) { Text("⏭ Következő") }
         }
-        val minEq = eq.bandLevelRange[0]
-        val maxEq = eq.bandLevelRange[1]
-        for (i in 0 until eq.numberOfBands) {
-            val bIdx = i.toShort()
-            val freq = eq.getCenterFreq(bIdx) / 1000
-            var valState by remember { mutableFloatStateOf(eq.getBandLevel(bIdx).toFloat()) }
-            Column(modifier = Modifier.padding(vertical = 4.dp)) {
-                Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-                    Text("$freq Hz", color = Color.White, fontSize = 13.sp)
-                    Text("${(valState / 100).toInt()} dB", color = Color(0xFF00E676), fontSize = 13.sp)
-                }
-                Slider(value = valState, onValueChange = { valState = it; eq.setBandLevel(bIdx, it.toInt().toShort()) }, valueRange = minEq.toFloat()..maxEq.toFloat())
-            }
+
+        Spacer(modifier = Modifier.height(24.dp))
+        OutlinedButton(onClick = {
+            val intent = context.packageManager.getLaunchIntentForPackage("com.spotify.music")
+            if (intent != null) context.startActivity(intent)
+        }) {
+            Text("Spotify Alkalmazás Megnyitása")
         }
     }
+}
+
+fun sendKey(context: Context, keyCode: Int) {
+    try {
+        val down = Intent(Intent.ACTION_MEDIA_BUTTON).apply { setPackage("com.spotify.music"); putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, keyCode)) }
+        context.sendBroadcast(down)
+        val up = Intent(Intent.ACTION_MEDIA_BUTTON).apply { setPackage("com.spotify.music"); putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_UP, keyCode)) }
+        context.sendBroadcast(up)
+    } catch (_: Exception) {}
 }
