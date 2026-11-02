@@ -1,9 +1,12 @@
 package com.sajat.hifiplayer
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.Service
 import android.content.Context
 import android.content.Intent
+import android.os.IBinder
 import android.os.Bundle
 import android.view.KeyEvent
 import android.webkit.PermissionRequest
@@ -57,6 +60,27 @@ object PlayerHolder {
     var exoPlayer: ExoPlayer? = null
 }
 
+// Háttérszolgáltatás, ami megakadályozza, hogy lezárt telefonnál megálljon a rádió
+class RadioBackgroundService : Service() {
+    override fun onBind(intent: Intent?): IBinder? = null
+
+    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        val channelId = "hifi_radio_channel"
+        val channel = NotificationChannel(channelId, "Hi-Fi Rádió Háttérszolgáltatás", NotificationManager.IMPORTANCE_LOW)
+        val manager = getSystemService(NotificationManager::class.java)
+        manager?.createNotificationChannel(channel)
+
+        val notification: Notification = Notification.Builder(this, channelId)
+            .setContentTitle("Hi-Fi Player fut")
+            .setContentText("A rádió a háttérben szól...")
+            .setSmallIcon(android.R.drawable.ic_media_play)
+            .build()
+
+        startForeground(1, notification)
+        return START_STICKY
+    }
+}
+
 class AutoMediaService : MediaSessionService() {
     private var mediaSession: MediaSession? = null
 
@@ -99,8 +123,9 @@ class MainActivity : ComponentActivity() {
         PlayerHolder.exoPlayer = exoPlayer
 
         try {
-            val serviceIntent = Intent(this, AutoMediaService::class.java)
-            startForegroundService(serviceIntent)
+            // Háttérszolgáltatások indítása a lezárás alatti zenelejátszáshoz és Android Autóhoz
+            startForegroundService(Intent(this, RadioBackgroundService::class.java))
+            startForegroundService(Intent(this, AutoMediaService::class.java))
         } catch (_: Exception) {}
 
         setContent {
@@ -364,13 +389,6 @@ fun YouTubeMusicTab() {
                 javaScriptEnabled = true
                 domStorageEnabled = true
                 mediaPlaybackRequiresUserGesture = false
-                // ASZTALI MÓD (Desktop User-Agent), hogy a YouTube asztali felülete töltődjön be a könnyen tekerhető csúszkával
-                userAgentString = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
-                useWideViewPort = true
-                loadWithOverviewMode = true
-                setSupportZoom(true)
-                builtInZoomControls = true
-                displayZoomControls = false
                 mixedContentMode = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             }
             webChromeClient = object : WebChromeClient() {
@@ -390,9 +408,9 @@ fun SpotifyControllerTab(context: Context) {
         Spacer(modifier = Modifier.height(20.dp))
 
         Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
-            Button(onClick = { sendKey(context, KeyEvent.KEYCODE_MEDIA_PREVIOUS) }) { Text("⏮ Előző") }
-            Button(onClick = { sendKey(context, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }) { Text("⏯ Play/Pause") }
-            Button(onClick = { sendKey(context, KeyEvent.KEYCODE_MEDIA_NEXT) }) { Text("⏭ Következő") }
+            Button(onClick = { sendKey(context, "com.spotify.music", KeyEvent.KEYCODE_MEDIA_PREVIOUS) }) { Text("⏮ Előző") }
+            Button(onClick = { sendKey(context, "com.spotify.music", KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE) }) { Text("⏯ Play/Pause") }
+            Button(onClick = { sendKey(context, "com.spotify.music", KeyEvent.KEYCODE_MEDIA_NEXT) }) { Text("⏭ Következő") }
         }
 
         Spacer(modifier = Modifier.height(24.dp))
@@ -405,11 +423,11 @@ fun SpotifyControllerTab(context: Context) {
     }
 }
 
-fun sendKey(context: Context, keyCode: Int) {
+fun sendKey(context: Context, packageName: String, keyCode: Int) {
     try {
-        val down = Intent(Intent.ACTION_MEDIA_BUTTON).apply { setPackage("com.spotify.music"); putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, keyCode)) }
+        val down = Intent(Intent.ACTION_MEDIA_BUTTON).apply { setPackage(packageName); putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_DOWN, keyCode)) }
         context.sendBroadcast(down)
-        val up = Intent(Intent.ACTION_MEDIA_BUTTON).apply { setPackage("com.spotify.music"); putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_UP, keyCode)) }
+        val up = Intent(Intent.ACTION_MEDIA_BUTTON).apply { setPackage(packageName); putExtra(Intent.EXTRA_KEY_EVENT, KeyEvent(KeyEvent.ACTION_UP, keyCode)) }
         context.sendBroadcast(up)
     } catch (_: Exception) {}
 }
