@@ -1,12 +1,7 @@
 package com.sajat.hifiplayer
 
-import android.app.Notification
-import android.app.NotificationChannel
-import android.app.NotificationManager
-import android.app.Service
 import android.content.Context
 import android.content.Intent
-import android.os.IBinder
 import android.os.Bundle
 import android.view.KeyEvent
 import android.webkit.PermissionRequest
@@ -43,8 +38,6 @@ import androidx.media3.exoplayer.DefaultRenderersFactory
 import androidx.media3.exoplayer.ExoPlayer
 import androidx.media3.exoplayer.audio.AudioSink
 import androidx.media3.exoplayer.audio.DefaultAudioSink
-import androidx.media3.session.MediaSession
-import androidx.media3.session.MediaSessionService
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -55,55 +48,6 @@ import java.net.URL
 import java.net.URLEncoder
 
 data class RadioStation(val name: String, val genre: String, val streamUrl: String, val isLossless: Boolean = false)
-
-object PlayerHolder {
-    var exoPlayer: ExoPlayer? = null
-}
-
-// Háttérszolgáltatás, ami megakadályozza, hogy lezárt telefonnál megálljon a rádió
-class RadioBackgroundService : Service() {
-    override fun onBind(intent: Intent?): IBinder? = null
-
-    override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        val channelId = "hifi_radio_channel"
-        val channel = NotificationChannel(channelId, "Hi-Fi Rádió Háttérszolgáltatás", NotificationManager.IMPORTANCE_LOW)
-        val manager = getSystemService(NotificationManager::class.java)
-        manager?.createNotificationChannel(channel)
-
-        val notification: Notification = Notification.Builder(this, channelId)
-            .setContentTitle("Hi-Fi Player fut")
-            .setContentText("A rádió a háttérben szól...")
-            .setSmallIcon(android.R.drawable.ic_media_play)
-            .build()
-
-        startForeground(1, notification)
-        return START_STICKY
-    }
-}
-
-class AutoMediaService : MediaSessionService() {
-    private var mediaSession: MediaSession? = null
-
-    @OptIn(UnstableApi::class)
-    override fun onCreate() {
-        super.onCreate()
-        val player = PlayerHolder.exoPlayer
-        if (player != null) {
-            mediaSession = MediaSession.Builder(this, player).build()
-        }
-    }
-
-    override fun onGetSession(controllerInfo: MediaSession.ControllerInfo): MediaSession? = mediaSession
-
-    override fun onDestroy() {
-        mediaSession?.run {
-            player.release()
-            release()
-            mediaSession = null
-        }
-        super.onDestroy()
-    }
-}
 
 class MainActivity : ComponentActivity() {
     private lateinit var exoPlayer: ExoPlayer
@@ -120,13 +64,6 @@ class MainActivity : ComponentActivity() {
         val attr = AudioAttributes.Builder().setUsage(C.USAGE_MEDIA).setContentType(C.AUDIO_CONTENT_TYPE_MUSIC).build()
         
         exoPlayer = ExoPlayer.Builder(this, renderersFactory).setAudioAttributes(attr, true).setHandleAudioBecomingNoisy(true).build()
-        PlayerHolder.exoPlayer = exoPlayer
-
-        try {
-            // Háttérszolgáltatások indítása a lezárás alatti zenelejátszáshoz és Android Autóhoz
-            startForegroundService(Intent(this, RadioBackgroundService::class.java))
-            startForegroundService(Intent(this, AutoMediaService::class.java))
-        } catch (_: Exception) {}
 
         setContent {
             MaterialTheme(colorScheme = darkColorScheme(background = Color(0xFF0A0A0A), surface = Color(0xFF161616), primary = Color(0xFF00E676))) {
